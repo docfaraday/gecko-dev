@@ -624,7 +624,7 @@ lsm_open_rx (lsm_lcb_t *lcb, cc_action_data_open_rcv_t *data,
 
       if (sdpmode) {
         if (!strlen(dcb->peerconnection)) {
-          vcmRxAllocPort(media->cap_index, dcb->group_id, media->refid,
+          vcmRxAllocPort(media->cap_index, dcb->media_cap_tbl->cap[media->cap_index].type, dcb->group_id, media->refid,
             lsm_get_ms_ui_call_handle(lcb->line, lcb->call_id, lcb->ui_id),
             data->port,
             &port_allocated);
@@ -1001,7 +1001,7 @@ lsm_rx_start (lsm_lcb_t *lcb, const char *fname, fsmdef_media_t *media)
                  * attrs.unique_payload_types
                  */
 
-                if ( media->cap_index == CC_VIDEO_1 ) {
+                if (dcb->media_cap_tbl->cap[media->cap_index].type == SDP_MEDIA_VIDEO) {
                     attrs.is_video = TRUE;
                     attrs.video.opaque = media->video;
                 } else {
@@ -1015,7 +1015,7 @@ lsm_rx_start (lsm_lcb_t *lcb, const char *fname, fsmdef_media_t *media)
 
                 config_get_value(CFGID_SDPMODE, &sdpmode, sizeof(sdpmode));
                 if (dcb->peerconnection) {
-                    ret_val = vcmRxStartICE(media->cap_index, group_id, media->refid,
+                    ret_val = vcmRxStartICE(media->cap_index, dcb->media_cap_tbl->cap[media->cap_index].type, group_id, media->refid,
                     media->level,
                     pc_stream_id,
                     pc_track_id,
@@ -1250,14 +1250,14 @@ lsm_tx_start (lsm_lcb_t *lcb, const char *fname, fsmdef_media_t *media)
              * attrs.unique_payload_types
              */
 
-            if ( CC_IS_VIDEO(media->cap_index)) {
+            if (dcb->media_cap_tbl->cap[media->cap_index].type == SDP_MEDIA_VIDEO) {
                 attrs.is_video = TRUE;
                 attrs.video.opaque = media->video;
                 if (lcb->vid_mute) {
                     attrs.mute = TRUE;
                 }
 
-            } else if ( CC_IS_AUDIO(media->cap_index)){
+            } else if (dcb->media_cap_tbl->cap[media->cap_index].type == SDP_MEDIA_AUDIO){
                 attrs.audio.packetization_period = media->packetization_period;
                 attrs.audio.max_packetization_period = media->max_packetization_period;
                 attrs.audio.avt_payload_type = media->avt_payload_type;
@@ -1293,7 +1293,9 @@ lsm_tx_start (lsm_lcb_t *lcb, const char *fname, fsmdef_media_t *media)
               }
             }
             else {
-              if (vcmTxStartICE(media->cap_index, group_id,
+              if (vcmTxStartICE(media->cap_index,
+                  dcb->media_cap_tbl->cap[media->cap_index].type,
+                  group_id,
                   media->refid,
                   media->level,
                   /* TODO(emannion): his perhaps needs some error checking for validity.
@@ -1816,7 +1818,7 @@ static void lsm_release_port (lsm_lcb_t *lcb)
 
     GSMSDP_FOR_MEDIA_LIST(media, start_media, end_media, dcb) {
         if (!sdpmode) {
-            vcmRxReleasePort(media->cap_index, dcb->group_id, media->refid,
+            vcmRxReleasePort(media->cap_index, dcb->media_cap_tbl->cap[media->cap_index].type, dcb->group_id, media->refid,
                             lsm_get_ms_ui_call_handle(lcb->line, lcb->call_id, lcb->ui_id), media->src_port);
         }
     }

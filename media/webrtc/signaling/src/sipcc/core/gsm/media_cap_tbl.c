@@ -17,6 +17,7 @@
  */
 cc_media_cap_table_t g_media_table = {
       1,
+      3, /* Size of array below */
       {
         {CC_AUDIO_1,SDP_MEDIA_AUDIO,TRUE,TRUE,SDP_DIRECTION_RECVONLY},
         {CC_VIDEO_1,SDP_MEDIA_VIDEO,TRUE,TRUE,SDP_DIRECTION_RECVONLY},
@@ -62,32 +63,41 @@ cc_boolean cc_media_isVideoCapEnabled() {
  * This method looks at video cap in cfg & native vid support on platform
  */
 static void updateVidCapTbl(){
+    int change_made = 0;
 
-    if ( g_vidCapEnabled  ) {
-        if ( g_media_table.cap[CC_VIDEO_1].enabled == FALSE ) {
-            // cfg is enabled but cap tbl is not
-            if ( g_nativeVidSupported ) {
-                // we can do native now enable cap
-                g_media_table.cap[CC_VIDEO_1].enabled = TRUE;
-                g_media_table.cap[CC_VIDEO_1].support_direction =
-                   g_natve_txCap_enabled?SDP_DIRECTION_SENDRECV:SDP_DIRECTION_RECVONLY;
-                if ( g_natve_txCap_enabled == FALSE ) {
+    for (size_t i = 0; i < g_media_table.num_caps; ++i) {
+        if (g_media_table.cap[i].type != SDP_MEDIA_VIDEO)
+            continue;
+
+        if ( g_vidCapEnabled  ) {
+            if ( g_media_table.cap[i].enabled == FALSE ) {
+                // cfg is enabled but cap tbl is not
+                if ( g_nativeVidSupported ) {
+                    // we can do native now enable cap
+                    g_media_table.cap[i].enabled = TRUE;
+                    g_media_table.cap[i].support_direction =
+                       g_natve_txCap_enabled?SDP_DIRECTION_SENDRECV:SDP_DIRECTION_RECVONLY;
+                    if ( g_natve_txCap_enabled == FALSE ) {
+
+                    }
+                    change_made = 1;
+                } else {
 
                 }
-                escalateDeescalate();
-            } else {
+            }
+        }  else {
+            // disable vid cap
+            DEF_DEBUG(MED_F_PREFIX"video capability disabled", "updateVidCapTbl");
 
+            if ( g_media_table.cap[i].enabled ) {
+                g_media_table.cap[i].enabled = FALSE;
+                change_made = 1;
             }
         }
-    }  else {
-        // disable vid cap
-        DEF_DEBUG(MED_F_PREFIX"video capability disabled", "updateVidCapTbl");
-
-        if ( g_media_table.cap[CC_VIDEO_1].enabled ) {
-            g_media_table.cap[CC_VIDEO_1].enabled = FALSE;
-            escalateDeescalate();
-        }
     }
+
+    if (change_made)
+        escalateDeescalate();
 }
 
 
@@ -132,16 +142,20 @@ void cc_media_update_native_video_txcap(boolean enable) {
     ccsnap_gen_deviceEvent(CCAPI_DEVICE_EV_CAMERA_ADMIN_CONFIG_CHANGED, CC_DEVICE_ID);
 
     if ( g_nativeVidSupported && g_vidCapEnabled ) {
-    // act on camera events only iof native video is enabled
-        if ( g_natve_txCap_enabled ) {
+      for (size_t i = 0; i < g_media_table.num_caps; ++i) {
+        if (g_media_table.cap[i].type != SDP_MEDIA_VIDEO)
+            continue;
 
-        } else if (g_media_table.cap[CC_VIDEO_1].enabled) {
+        // act on camera events only iof native video is enabled
+            if ( g_natve_txCap_enabled ) {
 
+            } else if (g_media_table.cap[i].enabled) {
+
+            }
+
+            g_media_table.cap[i].support_direction  =
+                g_natve_txCap_enabled?SDP_DIRECTION_SENDRECV:SDP_DIRECTION_RECVONLY;
         }
-
-        g_media_table.cap[CC_VIDEO_1].support_direction  =
-            g_natve_txCap_enabled?SDP_DIRECTION_SENDRECV:SDP_DIRECTION_RECVONLY;
-
         escalateDeescalate();
     }
 }

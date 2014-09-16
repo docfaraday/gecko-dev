@@ -166,7 +166,7 @@ MOZ_STATIC_ASSERT(MOZ_ARRAY_LENGTH(cc_feature_names) == CC_FEATURE_MAX + 1,
  */
 #define CC_MAX_DIALSTRING_LEN (512)
 #define CC_MAX_MEDIA_TYPES    (15)
-#define CC_MAX_MEDIA_CAP      (4)
+#define CC_MAX_MEDIA_CAP      (255)
 #define CC_NO_CALL_ID         (0)
 #define CC_NO_LINE            (0)
 #define CC_NO_DATA            (NULL)
@@ -743,10 +743,12 @@ typedef struct cc_media_cap_t_ {
     cc_media_stream_id_t pc_stream;       /* The media stream in the PC */
     cc_media_track_id_t  pc_track;        /* The track ID in the media stream */
     boolean           bundle_only;   /* this media is only available bundled */
+    boolean           negotiated; /* This media has been placed in an SDP */
 } cc_media_cap_t;
 
 typedef struct cc_media_cap_table_t_ {
     uint32_t        id;
+    uint8_t         num_caps;
     cc_media_cap_t  cap[CC_MAX_MEDIA_CAP];/* capability table.             */
 } cc_media_cap_table_t;
 

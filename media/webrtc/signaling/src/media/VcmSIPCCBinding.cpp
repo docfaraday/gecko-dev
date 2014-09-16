@@ -467,6 +467,7 @@ void vcmUnload (void)
  */
 
 void vcmRxAllocPort(cc_mcapid_t mcap_id,
+                    uint16_t type,
                     cc_groupid_t group_id,
                     cc_streamid_t stream_id,
                     cc_call_handle_t  call_handle,
@@ -481,13 +482,13 @@ void vcmRxAllocPort(cc_mcapid_t mcap_id,
     // Not in SDP/PeerConnection mode
     int port = -1;
     bool isVideo = false;
-    if(CC_IS_AUDIO(mcap_id))
+    if(type == SDP_MEDIA_AUDIO)
     {
       isVideo = false;
       if ( VcmSIPCCBinding::getAudioTermination() != nullptr )
         port = VcmSIPCCBinding::getAudioTermination()->rxAlloc( group_id, stream_id, port_requested );
     }
-    else if(CC_IS_VIDEO(mcap_id))
+    else if(type == SDP_MEDIA_VIDEO)
     {
       isVideo = true;
       if ( VcmSIPCCBinding::getVideoTermination() != nullptr )
@@ -1144,6 +1145,7 @@ void vcmOnRemoteStreamAdded(cc_call_handle_t call_handle,
  */
 
 int vcmRxStartICE(cc_mcapid_t mcap_id,
+                  uint16_t type,
                   cc_groupid_t group_id,
                   cc_streamid_t stream_id,
                   int level,
@@ -1179,7 +1181,7 @@ int vcmRxStartICE(cc_mcapid_t mcap_id,
     return VCM_ERROR;
   }
 
-  if (CC_IS_DATACHANNEL(mcap_id)) {
+  if (type == SDP_MEDIA_APPLICATION) {
     // That's all we need for DataChannels - a flow registered
     CSFLogDebug( logTag, "%s success", __FUNCTION__);
     return 0;
@@ -1263,7 +1265,7 @@ int vcmRxStartICE(cc_mcapid_t mcap_id,
     }
   }
 
-  if (CC_IS_AUDIO(mcap_id)) {
+  if (type == SDP_MEDIA_AUDIO) {
     std::vector<mozilla::AudioCodecConfig *> configs;
 
     // Instantiate an appropriate conduit
@@ -1332,7 +1334,7 @@ int vcmRxStartICE(cc_mcapid_t mcap_id,
                 pipeline.get(), conduit.get(), pc_stream_id, pc_track_id);
 
     stream->StorePipeline(pc_track_id, false, pipeline);
-  } else if (CC_IS_VIDEO(mcap_id)) {
+  } else if (type == SDP_MEDIA_VIDEO) {
 
     std::vector<mozilla::VideoCodecConfig *> configs;
     // Instantiate an appropriate conduit
@@ -1468,6 +1470,7 @@ short vcmRxClose(cc_mcapid_t mcap_id,
  */
 
 void vcmRxReleasePort  (cc_mcapid_t mcap_id,
+                        uint16_t type,
                         cc_groupid_t group_id,
                         cc_streamid_t stream_id,
                         cc_call_handle_t  call_handle,
@@ -1477,12 +1480,12 @@ void vcmRxReleasePort  (cc_mcapid_t mcap_id,
     CSFLogDebug( logTag, "vcmRxReleasePort(): group_id=%d stream_id=%d call_handle=%d port=%d",
                       group_id, stream_id, call_handle, port);
 
-    if(CC_IS_AUDIO(mcap_id))
+    if(type == SDP_MEDIA_AUDIO)
     {
         if ( VcmSIPCCBinding::getAudioTermination() != nullptr )
             VcmSIPCCBinding::getAudioTermination()->rxRelease( group_id, stream_id, port );
     }
-    else if(CC_IS_VIDEO(mcap_id))
+    else if(type == SDP_MEDIA_VIDEO)
     {
         if ( VcmSIPCCBinding::getVideoTermination() != nullptr )
            VcmSIPCCBinding::getVideoTermination()->rxRelease( group_id, stream_id, port );
@@ -2015,6 +2018,7 @@ static int vcmTxCreateVideoConduit(int level,
 #define EXTRACT_DYNAMIC_PAYLOAD_TYPE(PTYPE) ((PTYPE)>>16)
 
 int vcmTxStartICE(cc_mcapid_t mcap_id,
+                  uint16_t type,
                   cc_groupid_t group_id,
                   cc_streamid_t stream_id,
                   int level,
@@ -2070,11 +2074,11 @@ int vcmTxStartICE(cc_mcapid_t mcap_id,
   mozilla::RefPtr<mozilla::MediaSessionConduit> conduit;
   int err = VCM_ERROR;
   bool is_video;
-  if (CC_IS_AUDIO(mcap_id)) {
+  if (type == SDP_MEDIA_AUDIO) {
     mediaType = "audio";
     err = vcmTxCreateAudioConduit(level, payload, pc, attrs, conduit);
     is_video = false;
-  } else if (CC_IS_VIDEO(mcap_id)) {
+  } else if (type == SDP_MEDIA_VIDEO) {
     mediaType = "video";
     err = vcmTxCreateVideoConduit(level, payload, pc, attrs, conduit);
     is_video = true;

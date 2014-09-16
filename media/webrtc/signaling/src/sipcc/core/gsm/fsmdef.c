@@ -2749,6 +2749,132 @@ fsmdef_ev_dialstring (sm_event_t *event)
     return (sm_rc);
 }
 
+static cc_media_cap_t* find_matching_cap_in(cc_media_cap_table_t *table,
+                                            cc_media_cap_t *cap) {
+  size_t i;
+  for (i = 0; i < table->num_caps; ++i) {
+    /* TODO: match by msid */
+    if (table->cap[i].pc_stream == cap->pc_stream &&
+        table->cap[i].pc_track == cap->pc_track &&
+        table->cap[i].type == cap->type &&
+        table->cap[i].name == cap->name)
+      return &table->cap[i];
+  }
+
+  return NULL;
+}
+
+static cc_media_cap_t* find_unassociated_recvonly_cap_in(
+    cc_media_cap_table_t *table,
+    cc_media_cap_t *cap) {
+  size_t i;
+  for (i = 0; i < table->num_caps; ++i) {
+    if (table->cap[i].pc_stream == PC_STREAM_INVALID &&
+        table->cap[i].pc_track == PC_TRACK_INVALID &&
+        table->cap[i].type == cap->type &&
+        table->cap[i].support_direction == SDP_DIRECTION_RECVONLY &&
+        !table->cap[i].negotiated)
+      return &table->cap[i];
+  }
+
+  return NULL;
+}
+
+/* (audio|video)_recv_lines_needed is -1 when we just want to do sendrecv
+ * on everything.*/
+static int16_t
+fsmdef_ensure_required_caps(cc_media_cap_table_t *caps,
+                            int16_t audio_recv_lines_needed,
+                            int16_t video_recv_lines_needed,
+                            boolean need_datachannel,
+                            boolean force_bundle,
+                            string_t *error_outparam) {
+    int16_t total_enabled_caps = 0;
+    size_t i;
+
+    /* Does a few things:
+     * 1) Counts enabled caps.
+     * 2) Determines how many additional recvonly caps we need to add
+     * 3) Determines whether we need to add a datachannel cap
+     * 4) Sets bundle_only if necessary */
+    for (i = 0; i < caps->num_caps; ++i) {
+        cc_media_cap_t *cap = &caps->cap[i];
+        if (cap->enabled) {
+
+            ++total_enabled_caps;
+            if ((audio_recv_lines_needed && cap->type == SDP_MEDIA_AUDIO) ||
+                (video_recv_lines_needed && cap->type == SDP_MEDIA_VIDEO)) {
+                if (!cap->negotiated) {
+                    /* If we haven't put this in an SDP yet, we're allowed to
+                     * tweak the direction. */
+                    cap->support_direction |= SDP_DIRECTION_FLAG_RECV;
+                }
+                if (cap->support_direction & SDP_DIRECTION_FLAG_RECV) {
+                    /* When either of these is negative, it means we just
+                     * set recv on everything. */
+                    if (cap->type == SDP_MEDIA_AUDIO &&
+                        audio_recv_lines_needed > 0) {
+                        --audio_recv_lines_needed;
+                    }
+                    else if (cap->type == SDP_MEDIA_VIDEO &&
+                             video_recv_lines_needed > 0) {
+                        --video_recv_lines_needed;
+                    }
+                }
+            } else if (need_datachannel &&
+                       cap->type == SDP_MEDIA_APPLICATION) {
+                need_datachannel = FALSE;
+            }
+
+            if (!cap->negotiated) {
+                cap->bundle_only = force_bundle;
+            }
+        }
+    }
+
+    /* If we still need more recv tracks or datachannel, add them.
+     * Do not do anything if (audio|video)_recv_lines_needed is negative. */
+    while (audio_recv_lines_needed > 0 ||
+           video_recv_lines_needed > 0 ||
+           need_datachannel) {
+        cc_media_cap_t *extra;
+
+        if (caps->num_caps == CC_MAX_MEDIA_CAP) {
+            *error_outparam = strlib_printf(
+                "Unable to add enough m-lines, %u is just too much!",
+                (unsigned)CC_MAX_MEDIA_CAP + 1);
+            return -1;
+        }
+
+        extra = &caps->cap[caps->num_caps++];
+        ++total_enabled_caps;
+        extra->enabled = TRUE;
+        extra->support_security = TRUE;
+        extra->support_direction = SDP_DIRECTION_RECVONLY;
+        extra->pc_stream = PC_STREAM_INVALID;
+        extra->pc_track = PC_TRACK_INVALID;
+        extra->bundle_only = force_bundle;
+        extra->negotiated = FALSE;
+
+        /* Do all audio recv lines, then all video, then datachannel */
+        if (audio_recv_lines_needed > 0) {
+            --audio_recv_lines_needed;
+            extra->name = CC_AUDIO_1;
+            extra->type = SDP_MEDIA_AUDIO;
+        } else if (video_recv_lines_needed > 0) {
+            --video_recv_lines_needed;
+            extra->name = CC_VIDEO_1;
+            extra->type = SDP_MEDIA_VIDEO;
+        } else {
+            need_datachannel = FALSE;
+            extra->support_direction = SDP_DIRECTION_SENDRECV;
+            extra->name = CC_DATACHANNEL_1;
+            extra->type = SDP_MEDIA_APPLICATION;
+        }
+    }
+    return total_enabled_caps;
+}
+
 pc_error
 fsmdef_createoffer(fsm_fcb_t *fcb,
                    cc_feature_t *msg,
@@ -2766,8 +2892,40 @@ fsmdef_createoffer(fsm_fcb_t *fcb,
     char                *local_sdp = NULL;
     uint32_t            local_sdp_len = 0;
     boolean             has_stream = FALSE;
+    int16_t             audio_recv_lines_needed = -1;
+    int16_t             video_recv_lines_needed = -1;
+    boolean             need_datachannel = FALSE;
+    boolean             force_bundle = FALSE;
+    int16_t             enabled_caps;
+    cc_media_options_t  *options = msg->data.session.options;
+    size_t i;
+
 
     FSM_DEBUG_SM(DEB_F_PREFIX"Entered.", DEB_F_PREFIX_ARGS(FSM, __FUNCTION__));
+
+    /* Save params and free the struct now */
+    if (options) {
+        if (options->offer_to_receive_audio.was_passed) {
+            audio_recv_lines_needed = options->offer_to_receive_audio.value;
+        }
+
+        if (options->offer_to_receive_video.was_passed) {
+            video_recv_lines_needed = options->offer_to_receive_video.value;
+        }
+
+        /* TODO: Why is the default false if this is worded this way? */
+        if (options->moz_dont_offer_datachannel.was_passed) {
+            need_datachannel = !(options->moz_dont_offer_datachannel.value);
+        }
+
+        if (options->moz_bundle_only.was_passed) {
+            force_bundle = options->moz_bundle_only.value;
+        }
+
+        fsmdef_free_options(options);
+        options = 0;
+    }
+
 
     config_get_value(CFGID_SDPMODE, &sdpmode, sizeof(sdpmode));
     if (!sdpmode) {
@@ -2807,16 +2965,17 @@ fsmdef_createoffer(fsm_fcb_t *fcb,
 
     dcb->inbound = FALSE;
 
-    if (msg->data.session.options) {
-       gsmsdp_process_cap_options(dcb, msg->data.session.options);
-       fsmdef_free_options(msg->data.session.options);
-       msg->data.session.options = 0;
-    }
+    enabled_caps = fsmdef_ensure_required_caps(dcb->media_cap_tbl,
+                                               audio_recv_lines_needed,
+                                               video_recv_lines_needed,
+                                               need_datachannel,
+                                               force_bundle,
+                                               error_outparam);
 
-    if (dcb->media_cap_tbl->cap[CC_VIDEO_1].enabled ||
-        dcb->media_cap_tbl->cap[CC_AUDIO_1].enabled ||
-        dcb->media_cap_tbl->cap[CC_DATACHANNEL_1].enabled) {
-      has_stream = TRUE;
+    if (enabled_caps < 0) {
+        return (PC_INTERNAL_ERROR);
+    } else if (enabled_caps > 0) {
+        has_stream = TRUE;
     }
 
     if (!has_stream) {
@@ -2892,6 +3051,12 @@ fsmdef_createoffer(fsm_fcb_t *fcb,
 
     dcb->local_sdp_complete = TRUE;
 
+    for (i = 0; i < dcb->media_cap_tbl->num_caps; ++i) {
+        if (dcb->media_cap_tbl->cap[i].enabled) {
+            dcb->media_cap_tbl->cap[i].negotiated = TRUE;
+        }
+    }
+
     *sdp_outparam = strlib_malloc(msg_body.parts[0].body, -1);
     cc_free_msg_body_parts(&msg_body);
 
@@ -2912,11 +3077,12 @@ fsmdef_createanswer(fsm_fcb_t *fcb,
     char                *ufrag = NULL;
     char                *ice_pwd = NULL;
     short               vcm_res;
-    boolean             has_audio;
-    boolean             has_video;
-    boolean             has_data;
+    uint16_t            num_audio;
+    uint16_t            num_video;
+    uint16_t            num_data;
     char                *local_sdp = NULL;
     uint32_t            local_sdp_len = 0;
+    size_t              i;
 
     FSM_DEBUG_SM(DEB_F_PREFIX"Entered.", DEB_F_PREFIX_ARGS(FSM, __FUNCTION__));
 
@@ -3011,16 +3177,11 @@ fsmdef_createanswer(fsm_fcb_t *fcb,
     }
 
     /*
-     * Determine what media types are offered, used to create matching local SDP
-     * for negotiation.
-     */
-    gsmsdp_get_offered_media_types(fcb, dcb->sdp, &has_audio, &has_video, &has_data);
-
-    /*
      * The sdp member of the dcb has local and remote sdp
      * this next function fills in the local part
      */
-    cause = gsmsdp_create_local_sdp(dcb, TRUE, has_audio, has_video, has_data, FALSE);
+    /* Do we need this? Won't setremotedesc create this? */
+    cause = gsmsdp_create_local_sdp(dcb, TRUE, TRUE, TRUE, TRUE, FALSE);
     if (cause != CC_CAUSE_OK) {
         *error_outparam = strlib_printf(
             "Could not create local SDP for answer; cause = %s",
@@ -3062,6 +3223,12 @@ fsmdef_createanswer(fsm_fcb_t *fcb,
     }
 
     dcb->local_sdp_complete = TRUE;
+
+    for (i = 0; i < dcb->media_cap_tbl->num_caps; ++i) {
+        if (dcb->media_cap_tbl->cap[i].enabled) {
+            dcb->media_cap_tbl->cap[i].negotiated = TRUE;
+        }
+    }
 
     *sdp_outparam = strlib_malloc(msg_body.parts[0].body, -1);
 
@@ -3236,11 +3403,12 @@ fsmdef_setremotedesc(fsm_fcb_t *fcb,
     cc_msgbody_t        *part;
     uint32_t            body_length;
     cc_msgbody_info_t   msg_body;
-    boolean             has_audio;
-    boolean             has_video;
-    boolean             has_data;
+    uint16_t            num_audio;
+    uint16_t            num_video;
+    uint16_t            num_data;
     char                *remote_sdp = 0;
     uint32_t            remote_sdp_len = 0;
+    int16_t             enabled_caps;
 
     FSM_DEBUG_SM(DEB_F_PREFIX"Entered.", DEB_F_PREFIX_ARGS(FSM, __FUNCTION__));
 
@@ -3322,15 +3490,28 @@ fsmdef_setremotedesc(fsm_fcb_t *fcb,
          * Determine what media types are offered, used to create matching
          * local SDP for negotiation.
          */
-        gsmsdp_get_offered_media_types(fcb, dcb->sdp, &has_audio,
-            &has_video, &has_data);
+        /* TODO: This needs to be replaced with something that will handle
+         * recvonly m-lines by putting inactive caps in the caps array,
+         * so we can pair local streams up with them. */
+        gsmsdp_get_offered_media_types(fcb, dcb->sdp, &num_audio,
+            &num_video, &num_data);
+
+        enabled_caps = fsmdef_ensure_required_caps(dcb->media_cap_tbl,
+                                                 num_audio,
+                                                 num_video,
+                                                 num_data != 0,
+                                                 FALSE, /* Don't force bundle */
+                                                 error_outparam);
+
+        if (enabled_caps < 0) {
+            return (PC_INTERNAL_ERROR);
+        }
 
         /*
          * The sdp member of the dcb has local and remote sdp
          * this next function fills in the local part
          */
-        cause = gsmsdp_create_local_sdp(dcb, TRUE, has_audio, has_video,
-            has_data, FALSE);
+        cause = gsmsdp_create_local_sdp(dcb, TRUE, TRUE, TRUE, TRUE, FALSE);
         if (cause != CC_CAUSE_OK) {
             *error_outparam = strlib_printf(
                 "Could not create local SDP; cause = %s",
@@ -3515,12 +3696,47 @@ fsmdef_setpeerconnection(fsm_fcb_t *fcb, cc_feature_t *msg) {
     return (PC_NO_ERROR);
 }
 
+static void
+fsmdef_build_cap(cc_media_cap_t *cap, cc_feature_data_track_t *track_data) {
+    memset(cap, 0, sizeof(cc_media_cap_t));
+
+    /* TODO: Use the same type for these two things (this should also let
+     * us fix up some function signatures in vcm.h) */
+    /* TODO: Replace |name| with msid */
+    switch (track_data->media_type) {
+        case VIDEO:
+            cap->type = SDP_MEDIA_VIDEO;
+            cap->name = CC_VIDEO_1;
+            break;
+        case AUDIO:
+            cap->type = SDP_MEDIA_AUDIO;
+            cap->name = CC_AUDIO_1;
+            break;
+        case DATA:
+            cap->type = SDP_MEDIA_APPLICATION;
+            cap->name = CC_DATACHANNEL_1;
+            break;
+        default:
+            break;
+    }
+
+    cap->enabled = TRUE;
+    cap->support_security = TRUE;
+    cap->support_direction = SDP_DIRECTION_SENDONLY;
+    cap->pc_stream = track_data->stream_id;
+    cap->pc_track = track_data->track_id;
+    cap->bundle_only = FALSE;
+    cap->negotiated = FALSE;
+}
+
 pc_error
 fsmdef_addstream(fsm_fcb_t *fcb, cc_feature_t *msg, string_t *error_outparam) {
     fsmdef_dcb_t        *dcb = fcb->dcb;
     cc_causes_t         cause = CC_CAUSE_NORMAL;
     int                 sdpmode = 0;
     cc_media_cap_name   cap_index = CC_INVALID_INDEX;
+    cc_media_cap_t      *match;
+    cc_media_cap_t      cap;
 
     FSM_DEBUG_SM(DEB_F_PREFIX"Entered.", DEB_F_PREFIX_ARGS(FSM, __FUNCTION__));
 
@@ -3539,31 +3755,39 @@ fsmdef_addstream(fsm_fcb_t *fcb, cc_feature_t *msg, string_t *error_outparam) {
     }
 
 
-    /*
-     * This is temporary code to allow configuration of the two
-     * default streams. When multiple streams > 2 are supported this
-     * will be re-implemented.
-     */
-    switch (msg->data.track.media_type) {
-        case VIDEO:
-            cap_index = CC_VIDEO_1;
-            break;
-        case AUDIO:
-            cap_index = CC_AUDIO_1;
-            break;
-        case DATA:
-            cap_index = CC_DATACHANNEL_1;
-            break;
-        default:
-            break;
+    fsmdef_build_cap(&cap, &msg->data.track);
+
+    match = find_matching_cap_in(dcb->media_cap_tbl, &cap);
+
+    if (!match) {
+        /* We might have some caps marked with invalid stream/track ids
+         * because they came from a remote offer without any msid */
+        FSM_DEBUG_SM(DEB_F_PREFIX"Could not find matching cap, trying an unassociated cap", DEB_F_PREFIX_ARGS(FSM, __FUNCTION__));
+        match = find_unassociated_recvonly_cap_in(dcb->media_cap_tbl, &cap);
     }
 
-    if (cap_index != CC_INVALID_INDEX) {
-        dcb->media_cap_tbl->cap[cap_index].enabled = TRUE;
-        dcb->media_cap_tbl->cap[cap_index].support_direction = SDP_DIRECTION_SENDRECV;
-        dcb->media_cap_tbl->cap[cap_index].pc_stream = msg->data.track.stream_id;
-        dcb->media_cap_tbl->cap[cap_index].pc_track = msg->data.track.track_id;
+    if (match) {
+        /* Make sure pre-existing track is configured to send */
+        match->support_direction |= SDP_DIRECTION_FLAG_SEND;
+        match->enabled = TRUE;
+        /* Make sure identifiers are set, see above */
+        match->pc_stream = cap.pc_stream;
+        match->pc_track = cap.pc_track;
+        FSM_DEBUG_SM(DEB_F_PREFIX"Configured stream=%u track=%u to send", DEB_F_PREFIX_ARGS(FSM, __FUNCTION__), (unsigned) match->pc_stream, (unsigned)match->pc_track);
+    } else {
+        cc_media_cap_t *newcap;
+        FSM_DEBUG_SM(DEB_F_PREFIX"Creating new cap", DEB_F_PREFIX_ARGS(FSM, __FUNCTION__));
+        if (dcb->media_cap_tbl->num_caps == CC_MAX_MEDIA_CAP) {
+            *error_outparam = strlib_printf(
+                "Unable to add stream, %u is just too much!",
+                (unsigned)CC_MAX_MEDIA_CAP + 1);
+            return (PC_INTERNAL_ERROR);
+        }
+
+        newcap = &dcb->media_cap_tbl->cap[dcb->media_cap_tbl->num_caps++];
+        memcpy(newcap, &cap, sizeof(cap));
     }
+
     return (PC_NO_ERROR);
 }
 
@@ -3572,6 +3796,8 @@ fsmdef_removestream(fsm_fcb_t *fcb, cc_feature_t *msg, string_t *error_outparam)
     fsmdef_dcb_t        *dcb = fcb->dcb;
     cc_causes_t         cause = CC_CAUSE_NORMAL;
     int                 sdpmode = 0;
+    cc_media_cap_t      cap;
+    cc_media_cap_t      *match;
 
     FSM_DEBUG_SM(DEB_F_PREFIX"Entered.", DEB_F_PREFIX_ARGS(FSM, __FUNCTION__));
 
@@ -3589,21 +3815,17 @@ fsmdef_removestream(fsm_fcb_t *fcb, cc_feature_t *msg, string_t *error_outparam)
         return PC_INTERNAL_ERROR;
     }
 
-    /*
-     * This is temporary code to allow configuration of the two
-     * default streams. When multiple streams > 2 are supported this
-     * will be re-implemented.
-     */
-    if (msg->data.track.media_type == AUDIO) {
-        PR_ASSERT(dcb->media_cap_tbl->cap[CC_AUDIO_1].enabled);
-        dcb->media_cap_tbl->cap[CC_AUDIO_1].support_direction = SDP_DIRECTION_RECVONLY;
-        dcb->video_pref = SDP_DIRECTION_SENDRECV;
-    } else if (msg->data.track.media_type == VIDEO) {
-        PR_ASSERT(dcb->media_cap_tbl->cap[CC_VIDEO_1].enabled);
-        dcb->media_cap_tbl->cap[CC_VIDEO_1].support_direction = SDP_DIRECTION_RECVONLY;
+    fsmdef_build_cap(&cap, &msg->data.track);
+
+    match = find_matching_cap_in(dcb->media_cap_tbl, &cap);
+
+    if (match) {
+        /* TODO: Should we bother attempting to clean up if this cap hasn't
+         * been negotiated yet? */
+        match->support_direction &= SDP_DIRECTION_FLAG_RECV;
     } else {
-        /* Why weren't we doing the same thing for DATA? */
-        return (PC_NO_ERROR);
+        *error_outparam = strlib_printf("The stream does not exist");
+        return PC_INTERNAL_ERROR;
     }
 
     return (PC_NO_ERROR);

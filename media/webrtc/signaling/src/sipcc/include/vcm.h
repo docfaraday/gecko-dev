@@ -437,7 +437,10 @@ short vcmTxOpen(cc_mcapid_t mcap_id,
  *
  */
 
+/* |type| is an sdp_media_e, but including sdp.h releases the Kraken.
+ * Use a conversion function to pass cc_media_type_t instead */
 void vcmRxAllocPort(cc_mcapid_t mcap_id,
+        uint16_t type,
         cc_groupid_t group_id,
         cc_streamid_t stream_id,
         cc_call_handle_t  call_handle,
@@ -557,6 +560,7 @@ short vcmAddRemoteStreamHint(
  * @return void
  */
 void vcmRxReleasePort(cc_mcapid_t mcap_id,
+        uint16_t type,
         cc_groupid_t group_id,
         cc_streamid_t stream_id,
         cc_call_handle_t  call_handle,
@@ -629,6 +633,7 @@ void vcmOnRemoteStreamAdded(cc_call_handle_t call_handle,
  */
 
 int vcmRxStartICE(cc_mcapid_t mcap_id,
+        uint16_t type,
         cc_groupid_t group_id,
         cc_streamid_t stream_id,
         int level,
@@ -709,6 +714,7 @@ int vcmTxStart(cc_mcapid_t mcap_id,
  */
 
   int vcmTxStartICE(cc_mcapid_t mcap_id,
+        uint16_t type,
         cc_groupid_t group_id,
         cc_streamid_t stream_id,
         int level,

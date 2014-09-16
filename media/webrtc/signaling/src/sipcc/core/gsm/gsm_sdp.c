@@ -134,48 +134,8 @@ static const cc_media_cap_table_t *gsmsdp_get_media_capability (fsmdef_dcb_t *dc
     }
 
     if (sdpmode) {
-        /* Here we are copying only what we need from the g_media_table
-           in order to avoid a data race with its values being set in
-           media_cap_tbl.c */
         dcb_p->media_cap_tbl->id = g_media_table.id;
-
-        /* This needs to change when we handle more than one stream
-           of each media type at a time. */
-
-        dcb_p->media_cap_tbl->cap[CC_AUDIO_1].name = CC_AUDIO_1;
-        dcb_p->media_cap_tbl->cap[CC_VIDEO_1].name = CC_VIDEO_1;
-        dcb_p->media_cap_tbl->cap[CC_DATACHANNEL_1].name = CC_DATACHANNEL_1;
-
-        dcb_p->media_cap_tbl->cap[CC_AUDIO_1].type = SDP_MEDIA_AUDIO;
-        dcb_p->media_cap_tbl->cap[CC_VIDEO_1].type = SDP_MEDIA_VIDEO;
-        dcb_p->media_cap_tbl->cap[CC_DATACHANNEL_1].type = SDP_MEDIA_APPLICATION;
-
-        dcb_p->media_cap_tbl->cap[CC_AUDIO_1].enabled = FALSE;
-        dcb_p->media_cap_tbl->cap[CC_VIDEO_1].enabled = FALSE;
-        dcb_p->media_cap_tbl->cap[CC_DATACHANNEL_1].enabled = FALSE;
-
-        dcb_p->media_cap_tbl->cap[CC_AUDIO_1].support_security = TRUE;
-        dcb_p->media_cap_tbl->cap[CC_VIDEO_1].support_security = TRUE;
-        dcb_p->media_cap_tbl->cap[CC_DATACHANNEL_1].support_security = TRUE;
-
-        /* By default, all channels are "bundle only" */
-        dcb_p->media_cap_tbl->cap[CC_AUDIO_1].bundle_only = TRUE;
-        dcb_p->media_cap_tbl->cap[CC_VIDEO_1].bundle_only = TRUE;
-        dcb_p->media_cap_tbl->cap[CC_DATACHANNEL_1].bundle_only = TRUE;
-
-        /* We initialize as RECVONLY to allow the application to
-           display incoming media streams, even if it doesn't
-           plan to send media for those streams. This will be
-           upgraded to SENDRECV when and if a stream is added. */
-
-        dcb_p->media_cap_tbl->cap[CC_AUDIO_1].support_direction =
-          SDP_DIRECTION_RECVONLY;
-
-        dcb_p->media_cap_tbl->cap[CC_VIDEO_1].support_direction =
-          SDP_DIRECTION_RECVONLY;
-
-        dcb_p->media_cap_tbl->cap[CC_DATACHANNEL_1].support_direction =
-          SDP_DIRECTION_SENDRECV;
+        dcb_p->media_cap_tbl->num_caps = 0;
     } else {
         *(dcb_p->media_cap_tbl) = g_media_table;
 
@@ -633,7 +593,7 @@ static void gsmsdp_remove_media (fsmdef_dcb_t *dcb_p, fsmdef_media_t *media)
     (void)sll_lite_remove(&dcb_p->media_list, (sll_lite_node_t *)media);
 
     /* Release the port */
-    vcmRxReleasePort(media->cap_index, dcb_p->group_id, media->refid,
+    vcmRxReleasePort(media->cap_index, dcb_p->media_cap_tbl->cap[media->cap_index].type, dcb_p->group_id, media->refid,
                  lsm_get_ms_ui_call_handle(dcb_p->line, dcb_p->call_id, CC_NO_CALL_ID), media->src_port);
 
     /* free media structure */
@@ -874,7 +834,7 @@ gsmsdp_get_media_cap_entry_by_index (uint8_t cap_index, fsmdef_dcb_t *dcb_p)
         return (NULL);
     }
 
-    if (cap_index >= CC_MAX_MEDIA_CAP) {
+    if (cap_index >= media_cap_tbl->num_caps) {
         return (NULL);
     }
     return (&media_cap_tbl->cap[cap_index]);
@@ -4233,6 +4193,7 @@ gsmdsp_find_best_match_media_cap_index (fsmdef_dcb_t    *dcb_p,
                                         media_table_e   media_table)
 {
     const cc_media_cap_t *media_cap;
+    uint8_t              num_caps;
     uint8_t              cap_index, candidate_cap_index;
     boolean              srtp_fallback;
     sdp_direction_e      remote_direction, support_direction;
@@ -4263,15 +4224,19 @@ gsmdsp_find_best_match_media_cap_index (fsmdef_dcb_t    *dcb_p,
      * higher prefered entry placed at the lower index in the table.
      */
     candidate_cap_index = CC_MAX_MEDIA_CAP;
-    for (cap_index = 0; cap_index < CC_MAX_MEDIA_CAP; cap_index++) {
+
+    if (media_table == MEDIA_TABLE_GLOBAL) {
+        media_cap = g_media_table.cap;
+        num_caps = g_media_table.num_caps;
+    } else {
+        media_cap = dcb_p->media_cap_tbl->cap;
+        num_caps = dcb_p->media_cap_tbl->num_caps;
+    }
+
+    for (cap_index = 0; cap_index < num_caps; cap_index++) {
         /* Find the cap entry that has the same media type and enabled */
-        if (media_table == MEDIA_TABLE_GLOBAL) {
-            media_cap = &g_media_table.cap[cap_index];
-        } else {
-            media_cap = gsmsdp_get_media_cap_entry_by_index(cap_index,dcb_p);
-        }
-        if ((media_cap == NULL) || !media_cap->enabled ||
-            (media_cap->type != media_type)) {
+        if (!media_cap[cap_index].enabled ||
+            (media_cap[cap_index].type != media_type)) {
             /* does not exist, not enabled or not the same type */
             continue;
         }
@@ -4290,14 +4255,14 @@ gsmdsp_find_best_match_media_cap_index (fsmdef_dcb_t    *dcb_p,
          * any entry is ok.
          */
         if (remote_transport == SDP_TRANSPORT_RTPSAVP) {
-            if (!media_cap->support_security && !srtp_fallback) {
+            if (!media_cap[cap_index].support_security && !srtp_fallback) {
                 /*
                  * this entry does not support security and SRTP fallback
                  * is not enabled.
                  */
                 continue;
             }
-            if (!media_cap->support_security) {
+            if (!media_cap[cap_index].support_security) {
                 /*
                  * this entry is not support security but srtp fallback
                  * is enabled, it potentially can be used
@@ -4313,7 +4278,7 @@ gsmdsp_find_best_match_media_cap_index (fsmdef_dcb_t    *dcb_p,
          * not guess what the real capability of the offer may have or will
          * change in the future (re-invite).
          */
-        support_direction = media_cap->support_direction;
+        support_direction = media_cap[cap_index].support_direction;
         if (remote_direction == SDP_DIRECTION_INACTIVE) {
             if (support_direction != SDP_DIRECTION_SENDRECV) {
                 /* prefer send and receive for inactive */
@@ -4349,7 +4314,7 @@ gsmdsp_find_best_match_media_cap_index (fsmdef_dcb_t    *dcb_p,
         break;
     }
 
-    if (cap_index == CC_MAX_MEDIA_CAP) {
+    if (cap_index == num_caps) {
         if (candidate_cap_index != CC_MAX_MEDIA_CAP) {
             /* We have a candidate entry to use */
             cap_index = candidate_cap_index;
@@ -5058,30 +5023,6 @@ gsmsdp_negotiate_media_lines (fsm_fcb_t *fcb_p, cc_sdp_t *sdp_p, boolean initial
                     unsupported_line = TRUE;
                     GSM_DEBUG(DEB_L_C_F_PREFIX"unable to assign capability entry at %d",
                               DEB_L_C_F_PREFIX_ARGS(GSM, dcb_p->line, dcb_p->call_id, fname), i);
-                    // Check if we need to update the UI that video has been offered
-                    if ( offer && media_type == SDP_MEDIA_VIDEO &&
-                          ( ( g_media_table.cap[CC_VIDEO_1].support_direction !=
-                                   SDP_DIRECTION_INACTIVE) )  ) {
-                        // passed basic checks, now on to more expensive checks...
-                        remote_direction = gsmsdp_get_remote_sdp_direction(dcb_p,
-                                                                           media->level,
-                                                                           &media->dest_addr);
-                        cap_index        = gsmdsp_find_best_match_media_cap_index(dcb_p,
-                                                                                  sdp_p,
-                                                                                  media,
-                                                                                  MEDIA_TABLE_GLOBAL);
-
-                        GSM_DEBUG(DEB_L_C_F_PREFIX"remote_direction: %d global match %sfound",
-                            DEB_L_C_F_PREFIX_ARGS(GSM, dcb_p->line, dcb_p->call_id, fname),
-                            remote_direction, (cap_index != CC_MAX_MEDIA_CAP) ? "" : "not ");
-                        if ( cap_index != CC_MAX_MEDIA_CAP &&
-                               remote_direction != SDP_DIRECTION_INACTIVE ) {
-                           // this is an offer and platform can support video
-                           GSM_DEBUG(DEB_L_C_F_PREFIX"\n\n\n\nUpdate video Offered Called %d",
-                                    DEB_L_C_F_PREFIX_ARGS(GSM, dcb_p->line, dcb_p->call_id, fname), remote_direction);
-                           lsm_update_video_offered(dcb_p->line, dcb_p->call_id, remote_direction);
-                        }
-                    }
                     break;
                 }
             }
@@ -5476,8 +5417,11 @@ gsmsdp_negotiate_media_lines (fsm_fcb_t *fcb_p, cc_sdp_t *sdp_p, boolean initial
  * exist in the offered SDP.
  */
 cc_causes_t
-gsmsdp_get_offered_media_types (fsm_fcb_t *fcb_p, cc_sdp_t *sdp_p, boolean *has_audio,
-                                boolean *has_video, boolean *has_data)
+gsmsdp_get_offered_media_types (fsm_fcb_t *fcb_p,
+                                cc_sdp_t *sdp_p,
+                                uint16_t *num_audio,
+                                uint16_t *num_video,
+                                uint16_t *num_data)
 {
     cc_causes_t     cause = CC_CAUSE_OK;
     uint16_t        num_m_lines = 0;
@@ -5493,9 +5437,9 @@ gsmsdp_get_offered_media_types (fsm_fcb_t *fcb_p, cc_sdp_t *sdp_p, boolean *has_
         return CC_CAUSE_NO_MEDIA;
     }
 
-    *has_audio = FALSE;
-    *has_video = FALSE;
-    *has_data = FALSE;
+    *num_audio = 0;
+    *num_video = 0;
+    *num_data = 0;
 
     /*
      * Process each media line in the remote SDP
@@ -5504,11 +5448,11 @@ gsmsdp_get_offered_media_types (fsm_fcb_t *fcb_p, cc_sdp_t *sdp_p, boolean *has_
         media_type = sdp_get_media_type(sdp_p->dest_sdp, i);
 
         if(SDP_MEDIA_AUDIO == media_type)
-            *has_audio = TRUE;
+            (*num_audio)++;
         else if(SDP_MEDIA_VIDEO == media_type)
-            *has_video = TRUE;
+            (*num_video)++;
         else if(SDP_MEDIA_APPLICATION == media_type)
-            *has_data = TRUE;
+            (*num_data)++;
     }
 
     return cause;
@@ -5898,7 +5842,7 @@ gsmsdp_create_local_sdp (fsmdef_dcb_t *dcb_p, boolean force_streams_enabled,
 
     media_cap = &media_cap_tbl->cap[0];
     level = 0;
-    for (cap_index = 0; cap_index < CC_MAX_MEDIA_CAP-1; cap_index++) {
+    for (cap_index = 0; cap_index < media_cap_tbl->num_caps; cap_index++) {
 
         /* Build local m lines based on m lines that were in the offered SDP */
         media_enabled = TRUE;

@@ -575,6 +575,9 @@ typedef unsigned int cc_media_stream_id_t;
 
 typedef unsigned int cc_media_track_id_t;
 
+#define PC_STREAM_INVALID UINT_MAX
+#define PC_TRACK_INVALID UINT_MAX
+
 
 typedef enum {
   NO_STREAM = -1,

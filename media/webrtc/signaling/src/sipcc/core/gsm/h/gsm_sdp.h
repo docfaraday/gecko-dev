@@ -121,7 +121,11 @@ cc_causes_t gsmsdp_configure_dtls_data_attributes(fsm_fcb_t *fcb_p);
 cc_causes_t gsmsdp_find_level_from_mid(fsmdef_dcb_t * dcb, const char * mid, uint16_t *level);
 void gsmsdp_process_cap_options(fsmdef_dcb_t *dcb, cc_media_options_t* options);
 cc_causes_t
-gsmsdp_get_offered_media_types (fsm_fcb_t *fcb_p, cc_sdp_t *sdp_p, boolean *has_audio, boolean *has_video, boolean *has_data);
+gsmsdp_get_offered_media_types (fsm_fcb_t *fcb_p,
+                                cc_sdp_t *sdp_p,
+                                uint16_t *num_audio,
+                                uint16_t *num_video,
+                                uint16_t *num_data);
 fsmdef_media_t* gsmsdp_find_media_by_media_type(fsmdef_dcb_t *dcb, sdp_media_e 	media_type);
 
 extern void gsmsdp_set_ice_attribute (sdp_attr_e sdp_attr, uint16_t level,
